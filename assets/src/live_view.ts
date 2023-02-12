@@ -27,6 +27,19 @@ interface State {
   viewState?: Template;
 }
 
+function getCookie(name: string): string | null {
+	const nameLenPlus = (name.length + 1);
+	return document.cookie
+		.split(';')
+		.map(c => c.trim())
+		.filter(cookie => {
+			return cookie.substring(0, nameLenPlus) === `${name}=`;
+		})
+		.map(cookie => {
+			return decodeURIComponent(cookie.substring(nameLenPlus));
+		})[0] || null;
+}
+
 function connect(options: LiveViewOptions) {
   // only connect if there is a live view on the page
   if (document.getElementById("live-view-container") === null) {
@@ -40,7 +53,13 @@ function connect(options: LiveViewOptions) {
     proto = "wss"
   }
 
-  const socket = new WebSocket(`${proto}://${window.location.host}${window.location.pathname}`);
+  const csrf_token = getCookie("_lv_csrf");
+  if (!csrf_token) {
+    console.error("no live view csrf token");
+    return;
+  }
+
+  const socket = new WebSocket(`${proto}://${window.location.host}${window.location.pathname}?csrf=${csrf_token}`);
 
   var state: State = {}
 
