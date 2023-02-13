@@ -1,13 +1,13 @@
 //! Extractor for embedding live views in HTML templates.
 
-use crate::{html::Html, life_cycle::run_view, LiveView};
+use crate::{html::Html, life_cycle::run_view, util::csrf, LiveView};
 use async_trait::async_trait;
 use axum::{
     extract::{
         ws::{self, WebSocket, WebSocketUpgrade},
         FromRequestParts,
     },
-    http::{HeaderMap, Uri},
+    http::{HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
 use futures_util::{
@@ -109,44 +109,24 @@ impl LiveViewUpgrade {
         L: LiveView,
         F: FnOnce(EmbedLiveView<'_, L>) -> Html<L::Message>,
     {
-        const CSRF_COOKIE_NAME: &str = "_lv_csrf=";
-
         match self.inner {
             LiveViewUpgradeInner::Http => {
                 let mut headers = HeaderMap::new();
-                // TODO proper randomness
-                let random_token = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos();
-                if let Ok(val) = format!("{CSRF_COOKIE_NAME}{random_token}").parse() {
-                    headers.insert(http::header::SET_COOKIE, val);
-                }
-
+                csrf::set_cookie(&mut headers);
                 let embed = EmbedLiveView::noop();
                 (headers, gather_view(embed)).into_response()
             }
             LiveViewUpgradeInner::Ws(data) => {
                 let (ws, uri, headers) = *data;
 
-                let Some(cookie_csrf_token) = &headers.get("cookie")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.split_once(CSRF_COOKIE_NAME))
-                    .and_then(|(_, s)| s.split(";").next()) else {
-                    // TODO proper rejection
-                    return "no csrf token in cookies".into_response()
+                let Some(cookie_csrf_token) = csrf::token_from_cookies(&headers) else {
+                    return csrf::rejection("no csrf token in cookies");
                 };
-
-                let Some(quiery_csrf_token) = uri.query()
-                    .and_then(|s| s.split_once("csrf="))
-                    .and_then(|(_, s)| s.split("&").next()) else {
-                    // TODO proper rejection
-                    return "no csrf token in query".into_response()
+                let Some(quiery_csrf_token) = csrf::token_from_uri(&uri) else {
+                    return csrf::rejection("no csrf token in query").into_response()
                 };
-
-                if cookie_csrf_token != &quiery_csrf_token {
-                    // TODO proper rejection
-                    return "csrf tokens don't match".into_response();
+                if cookie_csrf_token != quiery_csrf_token {
+                    return csrf::rejection("csrf tokens don't match");
                 }
 
                 let mut view = None;
